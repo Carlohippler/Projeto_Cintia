@@ -10,3 +10,6 @@ build/
 .vs/
 *.slnx
 *.pyproj
+
+# Ignorar arquivos de log / relatorio teste
+relatorio_estoque.txt
