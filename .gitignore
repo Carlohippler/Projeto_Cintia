@@ -1,7 +1,12 @@
-.vs/
-build/
+# Ignorar banco de dados local
+*.db
+
+# Ignorar arquivos de build e instaladores
 dist/
-pycache/
+build/
 *.spec
-.idea/
-.env
+
+# Ignorar arquivos do Visual Studio
+.vs/
+*.slnx
+*.pyproj
