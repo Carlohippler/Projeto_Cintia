@@ -1,0 +1,4 @@
+RELATÓRIO DE ESTOQUE
+------------------------------
+ID: 1 | Nome: Racao | Custo: R$10.0
+ID: 2 | Nome: carro | Custo: R$20.0
