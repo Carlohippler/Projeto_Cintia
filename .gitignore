@@ -1,15 +1,2 @@
-# Ignorar banco de dados local
-*.db
-
-# Ignorar arquivos de build e instaladores
-dist/
-build/
-*.spec
-
-# Ignorar arquivos do Visual Studio
-.vs/
-*.slnx
-*.pyproj
-
-# Ignorar arquivos de log / relatorio teste
-relatorio_estoque.txt
+config/*.json 
+*.db 

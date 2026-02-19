@@ -4,8 +4,11 @@ import os
 from tkinter import messagebox, filedialog, ttk
 import shutil
 from PIL import Image, ImageTk
+import csv
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-# --- CONFIGURAÇÃO INICIAL ---
+# Janela principal
 janela = tk.Tk()
 janela.title("Gerenciador Empresarial Simplificado")
 janela.geometry("900x500")
@@ -15,6 +18,9 @@ pasta_imagens = "imagens"
 pasta_config = "config"
 caminho_config = os.path.join(pasta_config, pasta_imagens)
 caminho_background = os.path.join(pasta_config, pasta_imagens, "background.png")
+
+if not os.path.exists(caminho_config):
+    os.makedirs(caminho_config)
 
 # Background padrao
 def aplicar_fundo(event=None):
@@ -108,29 +114,47 @@ def aba_vendas():
 
    
     def registrar_venda():
+     prod = ent_prod.get()
+    try:
+        preco = float(ent_preco.get())
+        qtd_venda = int(ent_qtd.get())
+        total = preco * qtd_venda
+    except ValueError:
+        messagebox.showerror("Erro", "Valores de preço ou quantidade inválidos!")
+        return
+
+    if ent_prod and qtd_venda > 0:
+        conn = sqlite3.connect("ges_dados.db")
+        cur = conn.cursor()
+
+        # 1. Verifica se o produto existe e tem estoque suficiente
+        cur.execute("SELECT quantidade FROM produtos WHERE nome = ?", (ent_prod,))
+        resultado = cur.fetchone()
+
+        if resultado:
+            estoque_atual = resultado[0]
+            if estoque_atual >= qtd_venda:
+                # 2. Diminui do estoque
+                cur.execute("UPDATE produtos SET quantidade = quantidade - ? WHERE nome = ?", (qtd_venda, ent_prod))
+                
+                # 3. Registra a movimentação de SAÍDA
+                cur.execute("""
+                    INSERT INTO movimentacoes (tipo, produto, quantidade, valor_total) 
+                    VALUES ('SAIDA', ?, ?, ?)
+                """, (ent_prod, qtd_venda, total))
+                
+                conn.commit()
+                messagebox.showinfo("Sucesso", f"Venda de {ent_prod} realizada!\nTotal: R$ {total:.2f}")
+                aba_vendas() # Limpa os campos recarregando a aba
+            else:
+                messagebox.showwarning("Estoque Insuficiente", f"Você só tem {estoque_atual} unidades em estoque.")
+        else:
+            messagebox.showerror("Erro", "Produto não encontrado no cadastro!")
         
-       messagebox.showinfo("Venda", "Venda registrada com sucesso!")
+        conn.close()
+    else:
+        messagebox.showwarning("Atenção", "Preencha todos os campos corretamente!")
 
-    botao_registrar = tk.Button(janela, text="Registrar Venda", bg="green", fg="white", command=registrar_venda)
-    botao_registrar.place(x=560, y=28)
-
-    tk.Button(janela, text="Voltar", command=menu_principal).place(x=10, y=450)
-
-    campos = [ent_prod, ent_preco, ent_qtd, botao_registrar]
-    pulo_sequencial(campos)
- 
-    def calcular_total(event=None):
-        try:
-            p = float(ent_preco.get())
-            q = int(ent_qtd.get())
-            lbl_total.config(text=f"R$ {p * q:.2f}")
-        except:
-            lbl_total.config(text="Erro nos valores")
-
-    ent_preco.bind("<KeyRelease>", calcular_total)
-    ent_qtd.bind("<KeyRelease>", calcular_total)
-    
-    ent_qtd.bind("<Return>", lambda e: registrar_venda())
 
 # Estoque 
 def estoque():
@@ -152,10 +176,15 @@ def estoque():
 
     colunas = ("ID", "Produto", "Custo", "Qtd")
     tabela = ttk.Treeview(janela, columns=colunas, show="headings")
+
+    
+
     for col in colunas:
         tabela.heading(col, text=col)
         tabela.column(col, width=100)
     tabela.place(x=10, y=100, width=600, height=300)
+
+    
 
     def salvar_produto():
         nome = ent_nome.get()
@@ -169,6 +198,7 @@ def estoque():
             conn.close()
             messagebox.showinfo("Sucesso", "Produto cadastrado!")
             atualizar_tabela()
+            
         else:
             messagebox.showwarning("Atenção", "Preencha todos os campos!")
 
@@ -177,24 +207,36 @@ def estoque():
         conn = sqlite3.connect("ges_dados.db")
         cur = conn.cursor()
         cur.execute("SELECT id, nome, preco_custo, quantidade FROM produtos")
+        
         for linha in cur.fetchall():
             tabela.insert("", "end", values=linha)
         conn.close()
+        
 
-    tk.Button(janela, text="Salvar Produto", command=salvar_produto).place(x=430, y=25)
+    salvar_estoque = tk.Button(janela, text="Salvar Produto", command=salvar_produto)
+    salvar_estoque.place(x=430, y=25)
+
+    campos_estoque = [ent_nome, ent_custo, ent_quantidade, salvar_estoque]
+    pulo_sequencial(campos_estoque)
+
+    salvar_estoque.bind("<Return>", lambda e: salvar_produto())
+
     tk.Button(janela, text="Voltar", command=menu_principal).place(x=10, y=420)
     atualizar_tabela()
+
 
 # Configuracao 
 def menu_principal():
     limpar_tela()
     aplicar_fundo()
+    janela.title("Menu Principal - Gerenciador Empresarial Simplificado")
     tk.Button(janela, text="Vendas", width=20, command=aba_vendas).place(x=100, y=150)
     tk.Button(janela, text="Estoque", width=20, command=estoque).place(x=100, y=110)
     tk.Button(janela, text="Configuração", command=configuracoes).place(x=10, y=10)
     tk.Button(janela, text="Sair", command=janela.quit).place(x=800, y=10)
-    tk.Button(janela, text="Relatório Estoque", command=gerar_relatorio_txt).place(x=250, y=10)
+    tk.Button(janela, text="Relatório Estoque", command=gerar_relatorio_excel).place(x=250, y=10)
     tk.Button(janela, text = "Compras", command = aba_compras).place(x=200, y=50)
+    tk.Button(janela, text="Relatorio Estoque (Google Sheets)", command = enviar_para_google_sheets).place(x=350, y=10)
 
 def configuracoes():
     limpar_tela()
@@ -218,8 +260,8 @@ def conectar_banco():
         CREATE TABLE IF NOT EXISTS produtos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
-            preco_custo REAL,
-            quantidade INTEGER
+            preco_custo REAL NOT NULL,
+            quantidade INTEGER NOT NULL DEFAULT 1
         )
     """)
     # Tabela de Movimentações (Vendas e Compras)
@@ -227,9 +269,9 @@ def conectar_banco():
         CREATE TABLE IF NOT EXISTS movimentacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tipo TEXT, -- 'SAIDA' para venda, 'ENTRADA' para compra
-            produto TEXT,
-            quantidade INTEGER,
-            valor_total REAL,
+            produto TEXT NOT NULL,
+            quantidade INTEGER NOT NULL DEFAULT 1,
+            valor_total REAL NOT NULL,
             data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -243,17 +285,64 @@ def pulo_sequencial(lista_campos):
         lista_campos[i].bind("<Return>", lambda e, prox=lista_campos[i+1]:prox.focus_set())
 
 
-def gerar_relatorio_txt():
+
+
+def gerar_relatorio_excel():
+    nome_arquivo = "relatorio_estoque.csv"
     conn = sqlite3.connect("ges_dados.db")
     cur = conn.cursor()
-    cur.execute("SELECT * FROM produtos")
+    cur.execute("SELECT id, nome, preco_custo, quantidade FROM produtos")
     dados = cur.fetchall()
-    with open("relatorio_estoque.txt", "w") as f:
-        f.write("RELATÓRIO DE ESTOQUE\n" + "-"*30 + "\n")
-        for p in dados:
-            f.write(f"ID: {p[0]} | Nome: {p[1]} | Qtd: {p[4]}\n")
-    messagebox.showinfo("Relatório", "Gerado!")
+    
+    with open(nome_arquivo, "w", newline="", encoding="utf-8-sig") as f:
+        escritor = csv.writer(f, delimiter=";") # Ponto e vírgula é melhor para o Excel 
+        # Cabeçalho
+        escritor.writerow(["ID", "Nome do Produto", "Preço de Custo", "Quantidade em Estoque"])
+        # Dados
+        escritor.writerows(dados)
+    
     conn.close()
+    messagebox.showinfo("Sucesso", "Relatório CSV gerado! Abrindo no Excel...")
+    os.startfile(nome_arquivo)
+
+
+def enviar_para_google_sheets():
+    # 1. Use o r"" para caminhos do Windows
+    caminho_json = r"C:\Users\carlo\source\repos\GES\config\ges-gerenciador-empresarial-4f5496b6a95e.json"
+    
+    if not os.path.exists(caminho_json):
+        messagebox.showerror("Erro", "Arquivo de credenciais não encontrado na pasta config!")
+        return
+
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    
+    try:
+        # Carrega as credenciais
+        creds = ServiceAccountCredentials.from_json_keyfile_name(caminho_json, scope)
+        cliente = gspread.authorize(creds)
+
+        # Tenta abrir a planilha
+        planilha = cliente.open("Relatorio_Estoque").sheet1
+
+        # Restante do seu código de busca de dados...
+        conn = sqlite3.connect("ges_dados.db")
+        cur = conn.cursor()
+        cur.execute("SELECT id, nome, preco_custo, quantidade FROM produtos")
+        dados = cur.fetchall()
+        conn.close()
+
+        planilha.clear()
+        planilha.append_row(["ID", "Nome", "Custo", "Quantidade"])
+        
+        # DICA: use append_rows (no plural) para enviar tudo de uma vez, é 10x mais rápido
+        planilha.append_rows([list(linha) for linha in dados])
+        
+        messagebox.showinfo("Nuvem", "Dados enviados para o Google Sheets!")
+
+    except gspread.exceptions.SpreadsheetNotFound:
+        messagebox.showerror("Erro", "A planilha 'Relatorio_Estoque' não foi encontrada. Verifique o nome ou se você a compartilhou com o e-mail do Service Account.")
+    except Exception as e:
+        messagebox.showerror("Erro", f"Ocorreu um erro: {e}")
 
 conectar_banco()
 menu_principal()
