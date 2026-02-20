@@ -1,2 +1,10 @@
 config/*.json 
 *.db 
+.vs/
+build/
+dist/
+*.pyproj
+*.slnx
+*.spec
+*.csv
+*.txt

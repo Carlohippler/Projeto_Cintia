@@ -7,17 +7,26 @@ from PIL import Image, ImageTk
 import csv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import webbrowser
 
 # Janela principal
 janela = tk.Tk()
 janela.title("Gerenciador Empresarial Simplificado")
-janela.geometry("900x500")
+
+
+janela.state("zoomed")
+janela.resizable(False, False)
+
+janela.iconbitmap(r"config\imagens\Ges_icon.ico")
 
 image_fundo = None
 pasta_imagens = "imagens"
 pasta_config = "config"
 caminho_config = os.path.join(pasta_config, pasta_imagens)
 caminho_background = os.path.join(pasta_config, pasta_imagens, "background.png")
+
+usuario_logado_tipo = None
+tentativas = 0
 
 if not os.path.exists(caminho_config):
     os.makedirs(caminho_config)
@@ -48,6 +57,13 @@ def aplicar_fundo(event=None):
 
 
 janela.bind("<Configure>", aplicar_fundo)
+
+# serve para dar enter nos campos e pular para o proximo
+def pulo_sequencial(lista_campos):
+    
+    for i in range(len(lista_campos) - 1):
+        lista_campos[i].bind("<Return>", lambda e, prox=lista_campos[i+1]:prox.focus_set())
+
 
 def limpar_tela():
   
@@ -95,7 +111,7 @@ def aba_vendas():
     aplicar_fundo() 
     janela.title("Vendas")
     
-    # 1. CRIA OS CAMPOS PRIMEIRO
+    
     tk.Label(janela, text="Produto:", bg="white").place(x=10, y=10)
     ent_prod = tk.Entry(janela)
     ent_prod.place(x=10, y=30)
@@ -177,8 +193,6 @@ def estoque():
     colunas = ("ID", "Produto", "Custo", "Qtd")
     tabela = ttk.Treeview(janela, columns=colunas, show="headings")
 
-    
-
     for col in colunas:
         tabela.heading(col, text=col)
         tabela.column(col, width=100)
@@ -225,68 +239,6 @@ def estoque():
     atualizar_tabela()
 
 
-# Configuracao 
-def menu_principal():
-    limpar_tela()
-    aplicar_fundo()
-    janela.title("Menu Principal - Gerenciador Empresarial Simplificado")
-    tk.Button(janela, text="Vendas", width=20, command=aba_vendas).place(x=100, y=150)
-    tk.Button(janela, text="Estoque", width=20, command=estoque).place(x=100, y=110)
-    tk.Button(janela, text="Configuração", command=configuracoes).place(x=10, y=10)
-    tk.Button(janela, text="Sair", command=janela.quit).place(x=800, y=10)
-    tk.Button(janela, text="Relatório Estoque", command=gerar_relatorio_excel).place(x=250, y=10)
-    tk.Button(janela, text = "Compras", command = aba_compras).place(x=200, y=50)
-    tk.Button(janela, text="Relatorio Estoque (Google Sheets)", command = enviar_para_google_sheets).place(x=350, y=10)
-
-def configuracoes():
-    limpar_tela()
-    aplicar_fundo()
-    tk.Button(janela, text="Voltar", command=menu_principal).place(x=10, y=10)
-    tk.Button(janela, text="Escolher imagem", command=salvar_imagem).place(x=100, y=100)
-
-def salvar_imagem():
-    caminho = filedialog.askopenfilename(filetypes=[("Imagens","*.png *.jpg *.jpeg")])
-    if caminho:
-        if not os.path.exists(caminho_config): os.makedirs(caminho_config)
-        shutil.copy(caminho, caminho_background)
-        messagebox.showinfo("Sucesso", "Imagem alterada!")
-        aplicar_fundo()
-
-def conectar_banco():
-    conexao = sqlite3.connect("ges_dados.db")
-    cursor = conexao.cursor()
-    # Tabela de Produtos (Estoque)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS produtos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            preco_custo REAL NOT NULL,
-            quantidade INTEGER NOT NULL DEFAULT 1
-        )
-    """)
-    # Tabela de Movimentações (Vendas e Compras)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS movimentacoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tipo TEXT, -- 'SAIDA' para venda, 'ENTRADA' para compra
-            produto TEXT NOT NULL,
-            quantidade INTEGER NOT NULL DEFAULT 1,
-            valor_total REAL NOT NULL,
-            data TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conexao.commit()
-    conexao.close()
-
-# serve para dar enter nos campos e pular para o proximo
-def pulo_sequencial(lista_campos):
-    
-    for i in range(len(lista_campos) - 1):
-        lista_campos[i].bind("<Return>", lambda e, prox=lista_campos[i+1]:prox.focus_set())
-
-
-
-
 def gerar_relatorio_excel():
     nome_arquivo = "relatorio_estoque.csv"
     conn = sqlite3.connect("ges_dados.db")
@@ -307,7 +259,7 @@ def gerar_relatorio_excel():
 
 
 def enviar_para_google_sheets():
-    # 1. Use o r"" para caminhos do Windows
+    
     caminho_json = r"C:\Users\carlo\source\repos\GES\config\ges-gerenciador-empresarial-4f5496b6a95e.json"
     
     if not os.path.exists(caminho_json):
@@ -317,25 +269,41 @@ def enviar_para_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     
     try:
+
+        top = tk.Toplevel(janela)
+        top.title("Enviando...")
+        progress = ttk.Progressbar(top, orient="horizontal", length=200, mode="determinate")
+        progress.place(x=20, y=20)
+
         # Carrega as credenciais
         creds = ServiceAccountCredentials.from_json_keyfile_name(caminho_json, scope)
         cliente = gspread.authorize(creds)
 
         # Tenta abrir a planilha
-        planilha = cliente.open("Relatorio_Estoque").sheet1
+        planilha_doc = cliente.open("Relatorio_Estoque")
+        planilha_sheet = planilha_doc.sheet1
 
-        # Restante do seu código de busca de dados...
+        url_planilha = planilha_doc.url
+
+        progress['value'] = 100
+        janela.update()
+        top.destroy()
+
+        webbrowser.open(url_planilha)
+
+        messagebox.showinfo("Nuvem", "Dados sincronizados e planilha aberta!")
+        
         conn = sqlite3.connect("ges_dados.db")
         cur = conn.cursor()
         cur.execute("SELECT id, nome, preco_custo, quantidade FROM produtos")
         dados = cur.fetchall()
         conn.close()
 
-        planilha.clear()
-        planilha.append_row(["ID", "Nome", "Custo", "Quantidade"])
+        planilha_doc.clear()
+        planilha_doc.append_row(["ID", "Nome", "Custo", "Quantidade"])
         
-        # DICA: use append_rows (no plural) para enviar tudo de uma vez, é 10x mais rápido
-        planilha.append_rows([list(linha) for linha in dados])
+        
+        planilha_doc.append_rows([list(linha) for linha in dados])
         
         messagebox.showinfo("Nuvem", "Dados enviados para o Google Sheets!")
 
@@ -344,6 +312,159 @@ def enviar_para_google_sheets():
     except Exception as e:
         messagebox.showerror("Erro", f"Ocorreu um erro: {e}")
 
+
+# Configuracao 
+def menu_principal():
+    limpar_tela()
+    aplicar_fundo()
+    janela.title("Menu Principal - Gerenciador Empresarial Simplificado")
+
+    estado_restrito = "normal" if usuario_logado_tipo == 1 else "disabled"
+
+    tk.Button(janela, text="Vendas", width=20, command=aba_vendas).place(x=100, y=150)
+    tk.Button(janela, text="Estoque", width=20, command=estoque).place(x=100, y=110)
+    tk.Button(janela, text="Configuração", state = estado_restrito , command=configuracoes).place(x=10, y=10)
+    tk.Button(janela, text="Sair", command=janela.quit).place(x=800, y=10)
+    tk.Button(janela, text="Relatório Estoque", state = estado_restrito, command=gerar_relatorio_excel).place(x=250, y=10)
+    tk.Button(janela, text = "Compras", command = aba_compras).place(x=200, y=50)
+    tk.Button(janela, text="Relatorio Estoque (Google Sheets)", state = estado_restrito , command = enviar_para_google_sheets).place(x=350, y=10)
+    
+def tela_login():
+    janela_login = tk.Toplevel(janela)
+    janela_login.title("Acesso ao Sistema")
+    janela_login.geometry("300x250")
+    janela_login.grab_set()  # Bloqueia interação com a janela principal
+
+    janela_login.attributes("-topmost", True)
+    janela_login.focus_force()
+    janela_login.grab_set()
+
+
+    largura_janela = 300
+    altura_janela = 250
+    
+    largura_tela = janela_login.winfo_screenwidth()
+    altura_tela = janela_login.winfo_screenheight()
+    
+    pos_x = (largura_tela // 2) - (largura_janela // 2)
+    pos_y = (altura_tela // 2) - (altura_janela // 2)
+    
+    janela_login.geometry(f"{largura_janela}x{altura_janela}+{pos_x}+{pos_y}")
+
+
+    # Se fechar o login no 'X', encerra o programa todo
+    janela_login.protocol("WM_DELETE_WINDOW", janela.quit)
+
+    tk.Label(janela_login, text="Usuário:").pack(pady=5)
+    
+    var_usuario = tk.StringVar()
+    var_senha = tk.StringVar()
+
+    # Lógica Automática: Senha '1' preenche 'geral'
+    def verificar_atalho_geral(*args):
+        if var_senha.get() == "1":
+            var_usuario.set("geral")
+        elif var_senha.get() == "admin123":
+            var_usuario.set("admin")
+
+    var_senha.trace_add("write", verificar_atalho_geral)
+
+    ent_usuario = tk.Entry(janela_login, textvariable=var_usuario)
+    ent_usuario.pack(pady=5)
+
+    tk.Label(janela_login, text="Senha:").pack(pady=5)
+    ent_senha = tk.Entry(janela_login, textvariable=var_senha, show="*")
+    ent_senha.pack(pady=5)
+
+    ent_senha.focus_set()
+    
+    janela_login.after(100, lambda: ent_senha.focus_force())
+
+    def realizar_login(event=None):
+        global usuario_logado_tipo, tentativas
+        u = var_usuario.get()
+        s = var_senha.get()
+        
+        if not u or not s:
+            messagebox.showwarning("Atenção", "Preencha todos os campos!", parent=janela_login)
+            return
+
+        conn = sqlite3.connect("ges_dados.db")
+        cur = conn.cursor()
+        cur.execute("SELECT tipo FROM usuarios WHERE usuario = ? AND senha = ?", (u, s))
+        resultado = cur.fetchone()
+        conn.close()
+
+        if resultado is not None:
+            tentativas = 0
+            usuario_logado_tipo = resultado[0]
+            janela_login.destroy()
+            janela.deiconify()
+            menu_principal()
+
+            janela.deiconify()
+            janela.state("zoomed")
+            menu_principal()
+        else:
+            tentativas +=1
+
+            if tentativas >=3:
+                messagebox.showerror("Erro", "Muitas tentativas falhas! O programa será encerrado. ", parent=janela_login)
+                janela.quit()
+            else:
+                messagebox.showerror("Erro", "Login ou Senha incorretos!", parent=janela_login)
+
+    btn_entrar = tk.Button(janela_login, text="Entrar", bg="green", fg="white", command=realizar_login)
+    btn_entrar.pack(pady=20)
+    
+    # Faz o login funcionar ao apertar Enter
+    janela_login.bind("<Return>", realizar_login)
+
+# Config e banco de dados
+
+def configuracoes():
+    limpar_tela()
+    aplicar_fundo()
+    tk.Button(janela, text="Voltar", command=menu_principal).place(x=10, y=10)
+    tk.Button(janela, text="Escolher imagem", command=salvar_imagem).place(x=100, y=100)
+
+def salvar_imagem():
+    caminho = filedialog.askopenfilename(filetypes=[("Imagens","*.png *.jpg *.jpeg")])
+    if caminho:
+        if not os.path.exists(caminho_config): os.makedirs(caminho_config)
+        shutil.copy(caminho, caminho_background)
+        messagebox.showinfo("Sucesso", "Imagem alterada! Reinicie para aplicar.")
+        aplicar_fundo()
+
+def conectar_banco():
+    conexao = sqlite3.connect("ges_dados.db")
+    cursor = conexao.cursor()
+    
+    # Tabelas Existentes
+    cursor.execute("CREATE TABLE IF NOT EXISTS produtos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, preco_custo REAL NOT NULL, quantidade INTEGER NOT NULL DEFAULT 1)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS movimentacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, produto TEXT NOT NULL, quantidade INTEGER NOT NULL DEFAULT 1, valor_total REAL NOT NULL, data TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+
+    # Tabela de Usuários
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL UNIQUE,
+            senha TEXT NOT NULL,
+            tipo INTEGER NOT NULL -- 1 para Admin, 0 para Geral
+        )
+    """)
+
+    # Criar usuários padrão caso não existam
+    cursor.execute("SELECT COUNT(*) FROM usuarios")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO usuarios (usuario, senha, tipo) VALUES ('admin', 'admin123', 1)")
+        cursor.execute("INSERT INTO usuarios (usuario, senha, tipo) VALUES ('geral', '1', 0)")
+
+    conexao.commit()
+    conexao.close()
+
+
 conectar_banco()
-menu_principal()
+janela.withdraw() 
+tela_login()       
 janela.mainloop()
