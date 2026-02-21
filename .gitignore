@@ -8,3 +8,26 @@ dist/
 *.spec
 *.csv
 *.txt
+
+
+
+# Ignorar banco de dados local
+dados/*.db
+
+# Ignorar pastas de sessão do navegador (WhatsApp)
+config/sessao_whatsapp/
+**/sessao_whatsapp/
+
+# Ignorar caches do Python
+__pycache__/
+*.pyc
+
+# Ignorar pastas do PyInstaller
+build/
+dist/
+*.spec
+
+
+*.db
+*.db-journal
+*.db-wal

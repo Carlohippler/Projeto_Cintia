@@ -1,6 +1,8 @@
+import subprocess
 import tkinter as tk
 import sqlite3
 import os
+import sys
 from tkinter import messagebox, filedialog, ttk
 import shutil
 from PIL import Image, ImageTk
@@ -8,6 +10,8 @@ import csv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import webbrowser
+import threading
+from playwright.sync_api import sync_playwright
 
 # Janela principal
 janela = tk.Tk()
@@ -19,11 +23,30 @@ janela.resizable(False, False)
 
 janela.iconbitmap(r"config\imagens\Ges_icon.ico")
 
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Aplique o BASE_DIR em todas as suas variáveis de caminho
+pasta_config = os.path.join(BASE_DIR, "config")
+pasta_imagens = os.path.join(pasta_config, "imagens")
+caminho_background = os.path.join(pasta_imagens, "background.png")
+# Banco de dados dentro da pasta 'dados' que você criou no Inno
+caminho_banco = os.path.join(BASE_DIR, "dados", "ges_dados.db")
+
 image_fundo = None
 pasta_imagens = "imagens"
 pasta_config = "config"
 caminho_config = os.path.join(pasta_config, pasta_imagens)
 caminho_background = os.path.join(pasta_config, pasta_imagens, "background.png")
+
+# Configurações Visuais 
+COR_PRIMARIA = "#2c3e50"  # Azul escuro 
+COR_SUCESSO = "#27ae60"   # Verde
+COR_ALERTA = "#e67e22"    # Laranja
+COR_TEXTO_BOTAO = "white"
+FONTE_PADRAO = ("Segoe UI", 10, "bold")
 
 usuario_logado_tipo = None
 tentativas = 0
@@ -71,38 +94,220 @@ def limpar_tela():
         if widget != getattr(janela, 'label_background', None):
             widget.destroy()
 
-# Compras (Entrada de produtos)
+def janela_busca_produto(event=None, campo_nome=None, campo_preco=None):
+    top = tk.Toplevel(janela)
+    top.title("Localizar Produto (F3)")
+    top.geometry("450x400")
+    top.attributes("-topmost", True)
+    top.grab_set() # Bloqueia a janela de trás até fechar esta
+
+    tk.Label(top, text="Digite para filtrar:").pack(pady=5)
+    ent_filtro = tk.Entry(top)
+    ent_filtro.pack(pady=5, fill="x", padx=10)
+    ent_filtro.focus_set()
+
+    colunas = ("ID", "Nome", "Preço", "Qtd")
+    tree_busca = ttk.Treeview(top, columns=colunas, show="headings")
+    tree_busca.heading("ID", text="ID")
+    tree_busca.heading("Nome", text="Nome")
+    tree_busca.heading("Preço", text="Preço")
+    tree_busca.heading("Qtd", text="Estoque")
+    
+    # Ajuste de largura das colunas
+    tree_busca.column("ID", width=40)
+    tree_busca.column("Nome", width=150)
+    tree_busca.column("Preço", width=80)
+    tree_busca.column("Qtd", width=60)
+    tree_busca.pack(pady=10, fill="both", expand=True)
+
+    def carregar_busca(filtro=""):
+        for i in tree_busca.get_children(): tree_busca.delete(i)
+        conn = sqlite3.connect("ges_dados.db")
+        cur = conn.cursor()
+        # Busca o preço de custo também
+        cur.execute("SELECT id, nome, preco_custo, quantidade FROM produtos WHERE nome LIKE ?", (f'%{filtro}%',))
+        for linha in cur.fetchall():
+            tree_busca.insert("", "end", values=linha)
+        conn.close()
+
+    ent_filtro.bind("<KeyRelease>", lambda e: carregar_busca(ent_filtro.get()))
+    
+    def selecionar_produto(event_extra=None):
+        item_selecionado = tree_busca.selection()
+        if item_selecionado:
+            valores = tree_busca.item(item_selecionado)['values']
+            nome_prod = valores[1]
+            preco_prod = valores[2]
+            
+            # Preenche os campos específicos que passamos por argumento
+            if campo_nome:
+                campo_nome.delete(0, tk.END)
+                campo_nome.insert(0, nome_prod)
+            if campo_preco:
+                campo_preco.delete(0, tk.END)
+                campo_preco.insert(0, preco_prod)
+            
+            top.destroy() 
+            janela.event_generate("<Tab>") # Pula para o campo de quantidade
+
+    tree_busca.bind("<Double-1>", selecionar_produto)
+    top.bind("<Return>", selecionar_produto)
+    carregar_busca() 
+
+    # Compra
 def aba_compras():
     limpar_tela()
     aplicar_fundo()
-    janela.title("Registrar Compra (Entrada)")
+    janela.title("Registrar Compra (Entrada de Estoque)")
 
+    
     tk.Label(janela, text="Produto:", bg="white").place(x=10, y=10)
-    ent_prod = tk.Entry(janela)
-    ent_prod.place(x=10, y=30)
+    ent_prod_compra = tk.Entry(janela, width=30)
+    ent_prod_compra.place(x=10, y=30)
 
-    tk.Label(janela, text="Qtd Comprada:", bg="white").place(x=150, y=10)
-    ent_qtd = tk.Entry(janela)
-    ent_qtd.place(x=150, y=30)
+    # Vincula o F3 para abrir a busca 
+    ent_prod_compra.bind("<F3>", lambda e: janela_busca_produto(e, ent_prod_compra))
+
+    tk.Label(janela, text="Qtd Comprada:", bg="white").place(x=210, y=10)
+    ent_qtd_compra = tk.Entry(janela, width=15)
+    ent_qtd_compra.place(x=210, y=30)
 
     def registrar_compra():
-        prod = ent_prod.get()
-        qtd = ent_qtd.get()
-        if prod and qtd:
-            conn = sqlite3.connect("ges_dados.db")
-            cur = conn.cursor()
-            # 1. Registra a movimentação
-            cur.execute("INSERT INTO movimentacoes (tipo, produto, quantidade) VALUES ('ENTRADA', ?, ?)", (prod, qtd))
-            # 2. Atualiza o estoque (Soma)
-            cur.execute("UPDATE produtos SET quantidade = quantidade + ? WHERE nome = ?", (qtd, prod))
+        prod = ent_prod_compra.get().strip()
+        qtd_texto = ent_qtd_compra.get().strip()
+
+        if not prod or not qtd_texto:
+            messagebox.showwarning("Atenção", "Preencha o produto e a quantidade!")
+            return
+
+        try:
+            qtd_entrada = int(qtd_texto)
+            if qtd_entrada <= 0: raise ValueError
+        except ValueError:
+            messagebox.showerror("Erro", "Quantidade deve ser um número inteiro positivo!")
+            return
+
+        conn = sqlite3.connect("ges_dados.db")
+        cur = conn.cursor()
+
+        # 1. Verifica se o produto já existe no cadastro
+        cur.execute("SELECT id FROM produtos WHERE nome = ?", (prod,))
+        resultado = cur.fetchone()
+
+        if resultado:
+            
+            cur.execute("UPDATE produtos SET quantidade = quantidade + ? WHERE nome = ?", (qtd_entrada, prod))
+            
+            
+            
+            cur.execute("""
+                INSERT INTO movimentacoes (tipo, produto, quantidade, valor_total) 
+                VALUES ('ENTRADA', ?, ?, 0)
+            """, (prod, qtd_entrada))
+            
             conn.commit()
-            conn.close()
-            messagebox.showinfo("Sucesso", "Compra registrada e estoque atualizado!")
-            menu_principal()
+            messagebox.showinfo("Sucesso", f"Estoque atualizado! +{qtd_entrada} unidades de {prod}")
+            aba_compras() 
+        else:
+            messagebox.showwarning("Produto não cadastrado", 
+                                 "Este produto não existe no estoque.\nCadastre-o primeiro no menu 'Estoque'.")
+        
+        conn.close()
 
-    tk.Button(janela, text="Salvar Compra", bg="blue", fg="white", command=registrar_compra).place(x=290, y=28)
-    tk.Button(janela, text="Voltar", command=menu_principal).place(x=10, y=450)
+    
+    btn_salvar = tk.Button(janela, text="Confirmar Entrada", bg="blue", fg="white", 
+                          font=("Arial", 10, "bold"), command=registrar_compra)
+    btn_salvar.place(x=320, y=26)
 
+    tk.Button(janela, text="Voltar ao Menu", command=menu_principal).place(x=10, y=450)
+
+    
+    pulo_sequencial([ent_prod_compra, ent_qtd_compra, btn_salvar])
+
+    btn_salvar.bind("<Return>", lambda e: registrar_compra())
+
+
+def configurar_whatsapp():
+    def tarefa():
+        caminho_sessao = os.path.join(os.getcwd(), "config", "sessao_whatsapp")
+        if not os.path.exists(caminho_sessao):
+            os.makedirs(caminho_sessao)
+
+        try:
+            with sync_playwright() as p:
+                # O uso de launch_persistent_context é o que salva o login
+                browser = p.chromium.launch_persistent_context(
+                    user_data_dir=caminho_sessao,
+                    headless=False,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"] # Ajuda na estabilidade
+                )
+                page = browser.new_page()
+                page.goto("https://web.whatsapp.com")
+                
+                messagebox.showinfo("WhatsApp", "O navegador vai abrir. Faça o login e NÃO FECHE A JANELA manualmente.\n\nClique em OK aqui e aguarde o carregamento.")
+                
+                # Em vez de fechar imediatamente, esperamos o usuário fechar o navegador
+                # ou monitoramos se a página ainda existe.
+                while True:
+                    if not page.is_closed():
+                        page.wait_for_timeout(1000)
+                    else:
+                        break
+                
+                browser.close()
+                messagebox.showinfo("Sucesso", "Sessão salva com sucesso!")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível abrir o navegador: {e}")
+
+    threading.Thread(target=tarefa, daemon=True).start()
+
+def enviar_doc_whatsapp(numero, mensagem, caminho_arquivo):
+    def tarefa():
+        caminho_sessao = os.path.join(os.getcwd(), "config", "sessao_whatsapp")
+        
+        # Validação simples do número (precisa ter o código do país)
+        if not numero.startswith("55"):
+            print("Aviso: Número sem prefixo 55. Adicionando...")
+            numero_final = "55" + numero
+        else:
+            numero_final = numero
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
+                    user_data_dir=caminho_sessao,
+                    headless=True, # Modo invisível
+                    args=["--no-sandbox"]
+                )
+                page = browser.new_page()
+                
+                # Abrir chat direto
+                url = f"https://web.whatsapp.com/send?phone={numero_final}&text={mensagem}"
+                page.goto(url)
+                
+                # Espera carregar (o seletor do botão de "+" pode variar, esse é o atual)
+                # Aumentei o timeout para 60s caso a internet esteja lenta
+                page.wait_for_selector('div[title="Anexar"]', timeout=60000) 
+                
+                # Processo de anexo
+                page.click('div[title="Anexar"]')
+                
+                with page.expect_file_chooser() as fc_info:
+                    # Seletor para o input de arquivos
+                    page.set_input_files("input[type='file']", caminho_arquivo)
+                
+                # Espera carregar o preview e aperta Enter
+                page.wait_for_timeout(2000)
+                page.keyboard.press("Enter")
+                
+                # Tempo para garantir o upload antes de fechar o navegador
+                page.wait_for_timeout(5000)
+                browser.close()
+                messagebox.showinfo("Sucesso", "Documento enviado!")
+        except Exception as e:
+            messagebox.showerror("Erro WhatsApp", f"Falha no envio: {e}")
+
+    threading.Thread(target=tarefa, daemon=True).start()
 
 
 # Vendas
@@ -111,10 +316,11 @@ def aba_vendas():
     aplicar_fundo() 
     janela.title("Vendas")
     
-    
     tk.Label(janela, text="Produto:", bg="white").place(x=10, y=10)
     ent_prod = tk.Entry(janela)
     ent_prod.place(x=10, y=30)
+
+    ent_prod.bind("<F3>", lambda e: janela_busca_produto(e, ent_prod, ent_preco))
 
     tk.Label(janela, text="Preço Unitário:", bg="white").place(x=150, y=10)
     ent_preco = tk.Entry(janela)
@@ -130,46 +336,59 @@ def aba_vendas():
 
    
     def registrar_venda():
-     prod = ent_prod.get()
-    try:
-        preco = float(ent_preco.get())
-        qtd_venda = int(ent_qtd.get())
-        total = preco * qtd_venda
-    except ValueError:
-        messagebox.showerror("Erro", "Valores de preço ou quantidade inválidos!")
+        prod = ent_prod.get() # Você já pegou o texto aqui!
+        try:
+            preco = float(ent_preco.get())
+            qtd_venda = int(ent_qtd.get())
+            total = preco * qtd_venda
+        except ValueError:
+           messagebox.showerror("Erro", "Valores de preço ou quantidade inválidos!")
         return
 
-    if ent_prod and qtd_venda > 0:
-        conn = sqlite3.connect("ges_dados.db")
-        cur = conn.cursor()
+        if prod and qtd_venda > 0: # Use 'prod' em vez de 'ent_prod'
+            conn = sqlite3.connect("ges_dados.db")
+            cur = conn.cursor()
+    
+            cur.execute("SELECT quantidade FROM produtos WHERE nome = ?", (prod,))
+            resultado = cur.fetchone()
 
-        # 1. Verifica se o produto existe e tem estoque suficiente
-        cur.execute("SELECT quantidade FROM produtos WHERE nome = ?", (ent_prod,))
-        resultado = cur.fetchone()
-
-        if resultado:
-            estoque_atual = resultado[0]
-            if estoque_atual >= qtd_venda:
-                # 2. Diminui do estoque
-                cur.execute("UPDATE produtos SET quantidade = quantidade - ? WHERE nome = ?", (qtd_venda, ent_prod))
+            if resultado:
+                estoque_atual = resultado[0]
+                if estoque_atual >= qtd_venda:
+                    cur.execute("UPDATE produtos SET quantidade = quantidade - ? WHERE nome = ?", (qtd_venda, prod))
+                    
+                    # CORREÇÃO AQUI: Use 'prod' (a string), não 'ent_prod' (o objeto)
+                    cur.execute("""
+                        INSERT INTO movimentacoes (tipo, produto, quantidade, valor_total) 
+                        VALUES ('SAIDA', ?, ?, ?)
+                    """, (prod, qtd_venda, total))
                 
-                # 3. Registra a movimentação de SAÍDA
-                cur.execute("""
-                    INSERT INTO movimentacoes (tipo, produto, quantidade, valor_total) 
-                    VALUES ('SAIDA', ?, ?, ?)
-                """, (ent_prod, qtd_venda, total))
-                
-                conn.commit()
-                messagebox.showinfo("Sucesso", f"Venda de {ent_prod} realizada!\nTotal: R$ {total:.2f}")
-                aba_vendas() # Limpa os campos recarregando a aba
+                    conn.commit()
+                    messagebox.showinfo("Sucesso", f"Venda de {prod} realizada!\nTotal: R$ {total:.2f}")
+                    aba_vendas() 
+                else:
+                    messagebox.showwarning("Estoque Insuficiente", f"Você só tem {estoque_atual} unidades.")
             else:
-                messagebox.showwarning("Estoque Insuficiente", f"Você só tem {estoque_atual} unidades em estoque.")
-        else:
-            messagebox.showerror("Erro", "Produto não encontrado no cadastro!")
+                messagebox.showerror("Erro", "Produto não encontrado!")
         
-        conn.close()
-    else:
-        messagebox.showwarning("Atenção", "Preencha todos os campos corretamente!")
+            conn.close()
+        else:
+            messagebox.showwarning("Atenção", "Preencha todos os campos corretamente!")
+
+    finalizar_venda = tk.Button(janela, 
+                                text="Finalizar Venda", 
+                                bg=COR_SUCESSO, 
+                                fg="white", 
+                                cursor="hand2", 
+                                command=registrar_venda)
+
+    finalizar_venda.place(x=550, y=28)
+    tk.Button(janela, text="Voltar", command=menu_principal).place(x=10, y=450)
+
+    campos_venda = [ent_prod, ent_preco, ent_qtd, finalizar_venda]
+    pulo_sequencial(campos_venda)
+
+    finalizar_venda.bind("<Return>", lambda e: registrar_venda())
 
 
 # Estoque 
@@ -258,77 +477,98 @@ def gerar_relatorio_excel():
     os.startfile(nome_arquivo)
 
 
-def enviar_para_google_sheets():
-    
-    caminho_json = r"C:\Users\carlo\source\repos\GES\config\ges-gerenciador-empresarial-4f5496b6a95e.json"
-    
-    if not os.path.exists(caminho_json):
-        messagebox.showerror("Erro", "Arquivo de credenciais não encontrado na pasta config!")
-        return
-
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+def abrir_no_libre_office():
+    import subprocess
+    nome_arquivo = "relatorio_geral_estoque.csv"
     
     try:
-
-        top = tk.Toplevel(janela)
-        top.title("Enviando...")
-        progress = ttk.Progressbar(top, orient="horizontal", length=200, mode="determinate")
-        progress.place(x=20, y=20)
-
-        # Carrega as credenciais
-        creds = ServiceAccountCredentials.from_json_keyfile_name(caminho_json, scope)
-        cliente = gspread.authorize(creds)
-
-        # Tenta abrir a planilha
-        planilha_doc = cliente.open("Relatorio_Estoque")
-        planilha_sheet = planilha_doc.sheet1
-
-        url_planilha = planilha_doc.url
-
-        progress['value'] = 100
-        janela.update()
-        top.destroy()
-
-        webbrowser.open(url_planilha)
-
-        messagebox.showinfo("Nuvem", "Dados sincronizados e planilha aberta!")
-        
         conn = sqlite3.connect("ges_dados.db")
         cur = conn.cursor()
         cur.execute("SELECT id, nome, preco_custo, quantidade FROM produtos")
         dados = cur.fetchall()
         conn.close()
 
-        planilha_doc.clear()
-        planilha_doc.append_row(["ID", "Nome", "Custo", "Quantidade"])
-        
-        
-        planilha_doc.append_rows([list(linha) for linha in dados])
-        
-        messagebox.showinfo("Nuvem", "Dados enviados para o Google Sheets!")
+        # Criamos o CSV usando o ponto e vírgula (;) que o Calc reconhece perfeitamente
+        with open(nome_arquivo, "w", newline="", encoding="utf-8-sig") as f:
+            escritor = csv.writer(f, delimiter=";")
+            escritor.writerow(["ID", "PRODUTO", "PRECO CUSTO", "ESTOQUE ATUAL"])
+            escritor.writerows(dados)
 
-    except gspread.exceptions.SpreadsheetNotFound:
-        messagebox.showerror("Erro", "A planilha 'Relatorio_Estoque' não foi encontrada. Verifique o nome ou se você a compartilhou com o e-mail do Service Account.")
+        # O comando os.startfile abre o arquivo no programa padrão do Windows.
+        # Se o LibreOffice for o seu leitor padrão de planilhas, ele abrirá na hora.
+        os.startfile(nome_arquivo)
+        
     except Exception as e:
-        messagebox.showerror("Erro", f"Ocorreu um erro: {e}")
-
+        messagebox.showerror("Erro", f"Não foi possível abrir o LibreOffice: {e}")
+    
+    caminhos = [
+        r"C:\Program Files\LibreOffice\program\scalc.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\scalc.exe"
+    ]
+    
+    abriu = False
+    for caminho in caminhos:
+        if os.path.exists(caminho):
+            subprocess.Popen([caminho, nome_arquivo])
+            abriu = True
+            break
+            
+    if not abriu:
+        os.startfile(nome_arquivo)
 
 # Configuracao 
 def menu_principal():
     limpar_tela()
     aplicar_fundo()
-    janela.title("Menu Principal - Gerenciador Empresarial Simplificado")
+    janela.title("Menu Principal - GES")
 
-    estado_restrito = "normal" if usuario_logado_tipo == 1 else "disabled"
+    # Frame central para organizar os botões
+    frame_menu = tk.Frame(janela, bg="white", bd=2, relief="groove")
+    frame_menu.place(relx=0.5, rely=0.5, anchor="center") # Centraliza na tela
 
-    tk.Button(janela, text="Vendas", width=20, command=aba_vendas).place(x=100, y=150)
-    tk.Button(janela, text="Estoque", width=20, command=estoque).place(x=100, y=110)
-    tk.Button(janela, text="Configuração", state = estado_restrito , command=configuracoes).place(x=10, y=10)
-    tk.Button(janela, text="Sair", command=janela.quit).place(x=800, y=10)
-    tk.Button(janela, text="Relatório Estoque", state = estado_restrito, command=gerar_relatorio_excel).place(x=250, y=10)
-    tk.Button(janela, text = "Compras", command = aba_compras).place(x=200, y=50)
-    tk.Button(janela, text="Relatorio Estoque (Google Sheets)", state = estado_restrito , command = enviar_para_google_sheets).place(x=350, y=10)
+    tk.Label(frame_menu, text="PAINEL DE CONTROLE", bg="white", 
+             fg=COR_PRIMARIA, font=("Segoe UI", 14, "bold")).grid(row=0, column=0, columnspan=2, pady=20)
+
+    # Função auxiliar para criar botões bonitos rapidamente
+    def criar_btn(texto, comando, row, col, cor=COR_PRIMARIA, estado="normal"):
+        btn = tk.Button(frame_menu, text=texto, command=comando, bg=cor, fg=COR_TEXTO_BOTAO,
+                        font=FONTE_PADRAO, width=25, height=2, bd=0, cursor="hand2", state=estado)
+        btn.grid(row=row, column=col, padx=10, pady=10)
+        # Efeito de "hover" (muda cor ao passar o mouse)
+        btn.bind("<Enter>", lambda e: btn.config(bg="#34495e"))
+        btn.bind("<Leave>", lambda e: btn.config(bg=cor))
+        return btn
+
+    estado_admin = "normal" if usuario_logado_tipo == 1 else "disabled"
+
+    # Coluna 1: Operacional
+    criar_btn("🛒 VENDAS (SAÍDA)", aba_vendas, 1, 0, cor="#2980b9")
+    criar_btn("📦 ESTOQUE (PRODUTOS)", estoque, 2, 0)
+    criar_btn("📥 COMPRAS (ENTRADA)", aba_compras, 3, 0)
+
+    criar_btn("📱 CONECTAR WHATSAPP", configurar_whatsapp, 4, 0, cor="#25D366")
+
+    # Coluna 2: Administrativo
+    criar_btn("📊 RELATÓRIO LOCAL", gerar_relatorio_excel, 1, 1, cor=COR_SUCESSO, estado=estado_admin)
+    criar_btn("📊 LIBREOFFICE CALC", abrir_no_libre_office, 2, 1, cor=COR_SUCESSO, estado=estado_admin)
+    criar_btn("⚙️ CONFIGURAÇÕES", configuracoes, 3, 1, cor=COR_ALERTA, estado=estado_admin)
+
+    # Botão Sair fora do frame (Canto superior direito)
+    btn_sair = tk.Button(janela, text="SAIR", command=janela.quit, bg="#c0392b", 
+                         fg="white", font=FONTE_PADRAO, padx=20)
+    btn_sair.place(relx=0.98, rely=0.02, anchor="ne")
     
+
+    def disparar_teste():
+        # Aqui você pegaria o arquivo da NF gerada
+        arquivo = filedialog.askopenfilename(title="Selecione o Documento para enviar")
+        if arquivo:
+            enviar_doc_whatsapp("5545999999999", "Olá, segue sua Nota Fiscal!", arquivo)
+
+    criar_btn("📄 ENVIAR NOTA (WHATSAPP)", disparar_teste, 3, 1, cor="#128C7E")
+    criar_btn("⚙️ CONFIGURAÇÕES", configuracoes, 4, 1, cor=COR_ALERTA, estado=estado_admin)
+
+
 def tela_login():
     janela_login = tk.Toplevel(janela)
     janela_login.title("Acesso ao Sistema")
@@ -376,9 +616,9 @@ def tela_login():
     ent_senha = tk.Entry(janela_login, textvariable=var_senha, show="*")
     ent_senha.pack(pady=5)
 
-    ent_senha.focus_set()
+    ent_usuario.focus_set()
     
-    janela_login.after(100, lambda: ent_senha.focus_force())
+    janela_login.after(100, lambda: ent_usuario.focus_force())
 
     def realizar_login(event=None):
         global usuario_logado_tipo, tentativas
@@ -414,7 +654,7 @@ def tela_login():
             else:
                 messagebox.showerror("Erro", "Login ou Senha incorretos!", parent=janela_login)
 
-    btn_entrar = tk.Button(janela_login, text="Entrar", bg="green", fg="white", command=realizar_login)
+    btn_entrar = tk.Button(janela_login, text="Entrar", bg="green", fg="black", command=realizar_login)
     btn_entrar.pack(pady=20)
     
     # Faz o login funcionar ao apertar Enter
@@ -437,7 +677,15 @@ def salvar_imagem():
         aplicar_fundo()
 
 def conectar_banco():
-    conexao = sqlite3.connect("ges_dados.db")
+
+    def instalar_dependencias_playwright():
+        try:
+            # Tenta verificar se o chromium está instalado
+            subprocess.run(["playwright", "install", "chromium"], check=True)
+        except:
+            pass
+
+    conexao = sqlite3.connect(caminho_banco)
     cursor = conexao.cursor()
     
     # Tabelas Existentes
